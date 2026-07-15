@@ -26,22 +26,29 @@ pub enum UpdateRunMode {
 const PROMPT_UPDATE_NOW: &str = "Update now? [Y/n/d]";
 const MSG_AUTO_UPDATE_BACKGROUND: &str = "Auto-update running in background.";
 const MSG_RUN_UPDATE_MANUAL: &str = "Run `grok update` to get the latest version.";
-/// Manual-install one-liner for this platform's bootstrap installer.
+/// Manual reinstall hint for Gork Build (never points at x.ai installers —
+/// those would replace this fork with official Grok Build).
 fn manual_install_cmd() -> &'static str {
-    if cfg!(windows) {
-        "irm https://x.ai/cli/install.ps1 | iex"
-    } else {
-        "curl -fsSL https://x.ai/cli/install.sh | bash"
-    }
+    "git pull && cargo build -p xai-grok-pager-bin --release  # binary: target/release/gork"
 }
 
 /// Build a reinstall hint for a known installer type.
 fn reinstall_hint(installer: &str) -> String {
     match installer {
         "npm" => "Please reinstall via npm:\n  npm i -g @gork-build/gork".to_string(),
-        "gh-release" => "Please reinstall via GitHub Releases:\n  gh release download --repo xai-org-shared/grok-build --pattern 'grok-*' --output grok && chmod +x grok".to_string(),
-        _ => format!("Please reinstall via:\n  {}", manual_install_cmd()),
+        "gh-release" => "Please reinstall from this fork's GitHub Releases:\n  https://github.com/thedavidweng/gork-build/releases".to_string(),
+        _ => format!(
+            "Please reinstall Gork Build from source (do not use x.ai/cli installers):\n  {}",
+            manual_install_cmd()
+        ),
     }
+}
+
+/// Gork Build never auto-updates from vendor (x.ai) channels. Enabling that
+/// path would download official Grok Build and overwrite the community binary.
+#[inline]
+fn vendor_auto_update_forbidden() -> bool {
+    xai_grok_version::PRIVACY_BUILD || xai_grok_version::research_data_collection_forbidden()
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -394,6 +401,12 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
         return BackgroundUpdateCheck::none();
     }
 
+    // Community fork: never pull vendor auto-updates (would replace `gork`
+    // with official `grok` from x.ai install channels).
+    if vendor_auto_update_forbidden() {
+        return BackgroundUpdateCheck::none();
+    }
+
     let current_config = config::load_config().await;
     if current_config.cli.auto_update == Some(false) {
         return BackgroundUpdateCheck::none();
@@ -478,8 +491,10 @@ pub async fn run_update_if_available(
 
     let current_config = config::load_config().await;
 
-    // Gork Build: auto-update from x.ai install channels is OFF by default.
-    // Users who want it must set `[cli] auto_update = true` explicitly.
+    // Gork Build: vendor auto-update is hard-disabled (not an opt-in).
+    if vendor_auto_update_forbidden() {
+        return Ok(false);
+    }
     if current_config.cli.auto_update != Some(true) {
         return Ok(false);
     }
@@ -3222,21 +3237,16 @@ mod tests {
     }
 
     #[test]
-    fn test_reinstall_hint_internal_mentions_platform_installer() {
+    fn test_reinstall_hint_internal_points_at_gork_source_build() {
         let hint = reinstall_hint("internal");
-        if cfg!(windows) {
-            assert!(hint.contains("irm"), "should suggest irm install: {hint}");
-            assert!(
-                hint.contains("install.ps1"),
-                "should reference install.ps1: {hint}"
-            );
-        } else {
-            assert!(hint.contains("curl"), "should suggest curl install: {hint}");
-            assert!(
-                hint.contains("install.sh"),
-                "should reference install.sh: {hint}"
-            );
-        }
+        assert!(
+            hint.contains("cargo build") && hint.contains("gork"),
+            "Gork Build reinstall must point at source rebuild, not x.ai installers: {hint}"
+        );
+        assert!(
+            !hint.contains("x.ai/cli"),
+            "must never recommend vendor installers: {hint}"
+        );
     }
 
     #[test]

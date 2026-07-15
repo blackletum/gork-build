@@ -45,7 +45,7 @@ Comparison at a glance:
 | Mixpanel / product events | On by default in releases | **Hard-off** |
 | GCS research / session traces | Upload pipeline present | **Hard-off** |
 | Whole-repo research packaging | Present upstream | **Disabled** |
-| Auto-update from x.ai channels | On by default | **Off by default** |
+| Auto-update channel | x.ai installers | **None** (rebuild from this repo) |
 | Coding-data retention default | Share / opt-in | **Privacy / opt-out** |
 
 ---
@@ -62,12 +62,17 @@ including secrets in files the agent read. Upstream open-sourced the harness;
 - No client-side research / trace / session-state uploads to GCS
 - Remote feature flags **cannot** re-enable those paths
 - Default coding-data retention preference is **opt-out**
-- Official x.ai auto-update installers are not run unless you opt in
+- No vendor auto-update: Gork Build never runs `x.ai/cli/install.*` (that
+  would replace your binary with official Grok Build)
 
 **What still leaves the machine:** whatever the agent must send to the Grok
 **model API** to work (prompts + tool results for files it actually reads).
 That is required for a cloud coding agent. Gork Build does not add extra
 research packaging on top.
+
+**How to update Gork Build:** pull this repository and rebuild (or install a
+release from **this** project when published). There is no shared update
+channel with upstream.
 
 ## Build from source
 
@@ -93,7 +98,7 @@ upstream does — model access still goes through the Grok API.
 | `POST …/v1/storage` research traces | **Never enabled** (`resolve_trace_upload` → false) |
 | Mixpanel / product events | **No-op / never constructed** |
 | Sentry | Only if you set `SENTRY_DSN` yourself |
-| Auto-update (`x.ai/cli/install.*`) | Off unless `[cli] auto_update = true` |
+| Vendor auto-update (`x.ai/cli/install.*`) | **Never** (would overwrite the fork) |
 | `is_data_collection_disabled` | Always **true** in this build |
 
 See [`PRIVACY.md`](PRIVACY.md) for details and residual risks.
@@ -108,10 +113,10 @@ telemetry = false
 [telemetry]
 trace_upload = false
 mixpanel_enabled = false
-
-[cli]
-auto_update = false
 ```
+
+`[cli] auto_update` is ignored for vendor channels: this build will not fetch
+or run x.ai installers even if the key is set to `true`.
 
 Optional: `/privacy opt-out` in the TUI so the **server** retention flag
 matches the client (recommended even though client uploads are hard-off).

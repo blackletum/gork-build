@@ -1220,8 +1220,9 @@ pub fn default_settings() -> Vec<SettingMeta> {
             category: SettingCategory::Advanced,
             owner: SettingOwner::Shell,
             label: "Auto-update",
-            description: "Automatically download and install updates on startup \
-                          (uses upstream x.ai channels if enabled). Gork Build default: off.",
+            description: "Unused in Gork Build. Vendor (x.ai) auto-update is hard-disabled so \
+                          this fork is never overwritten by official Grok Build installers. \
+                          Update by rebuilding from the gork-build repository.",
             keywords: &[
                 "auto", "update", "updates", "upgrade", "version", "install", "channel",
             ],

@@ -23,8 +23,9 @@ and config files **cannot** re-enable them while
    no-ops if anything still calls them.
 4. **Repo change packaging** — `[repo_changes_dedup] enabled` defaults to
    `false`.
-5. **Auto-update from x.ai** — off unless the user sets
-   `[cli] auto_update = true` in config.
+5. **Vendor auto-update** — hard-disabled. Gork Build never runs
+   `x.ai/cli/install.*`; that channel would replace this fork with official
+   Grok Build. Update by rebuilding from this repository.
 6. **Sentry** — no compile-time DSN; only an explicit runtime `SENTRY_DSN`
    can enable crash reporting.
 

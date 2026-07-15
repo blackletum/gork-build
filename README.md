@@ -1,6 +1,14 @@
 <div align="center">
 
-# Gork Build
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/gork-build-symbol-white.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/gork-build-symbol-black.png">
+    <img alt="Gork Build logo" src="docs/assets/gork-build-symbol-black.png" width="96">
+  </picture>
+  <br>
+  Gork Build (<code>gork</code>)
+</h1>
 
 **Gork Build: the VSCodium-style community build of Grok Build, [no secrets send to xAI](https://gist.github.com/cereblab/dc9a40bc26120f4540e4e09b75ffb547)**
 
@@ -8,12 +16,26 @@ An independent, community-maintained distribution of
 [SpaceXAI Grok Build](https://github.com/xai-org/grok-build) with vendor
 telemetry and branding removed.
 
+[Building from source](#build-from-source) ·
+[Privacy](#privacy-guarantees-client) ·
+[Documentation](#documentation) ·
+[Contributing](#contributing) ·
+[License](#license)
+
+![Gork Build TUI](docs/assets/gork-build-tui-screenshot.jpg)
+
+**Gork Build is to [Grok Build](https://github.com/xai-org/grok-build) what
+[VSCodium](https://github.com/VSCodium/vscodium) is to VS Code.**
+
+This repository contains the Rust source for the `gork` CLI/TUI and agent
+runtime, forked from [`xai-org/grok-build`](https://github.com/xai-org/grok-build)
+with research telemetry hard-off and vendor branding removed.
+
 </div>
 
 ---
 
-Gork Build is to [Grok Build](https://github.com/xai-org/grok-build) what
-[VSCodium](https://github.com/VSCodium/vscodium) is to VS Code:
+Comparison at a glance:
 
 | | Grok Build (upstream) | **Gork Build** (this fork) |
 |--|----------------------|---------------------------|

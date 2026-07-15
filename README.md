@@ -129,6 +129,18 @@ User guide (upstream docs tree, still accurate for features):
 External contributions are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md)
 for setup, commit style, and PR expectations. Security reports: [`SECURITY.md`](SECURITY.md).
 
+## Made with Grok 4.5
+
+<div align="center">
+
+### Made with Grok 4.5
+
+![Gork Build session — Made with Grok 4.5](docs/assets/made-with-grok-4.5.png)
+
+This community fork was built with [Grok 4.5](https://grok.com).
+
+</div>
+
 ## Relationship to upstream
 
 This repository is a fork of [`xai-org/grok-build`](https://github.com/xai-org/grok-build).

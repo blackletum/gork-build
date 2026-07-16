@@ -56,8 +56,9 @@ pub fn test_home() -> &'static PathBuf {
             std::env::remove_var("GROK_INSTALLER");
             std::env::remove_var("GROK_MANAGED_BY_NPM");
             std::env::remove_var("GROK_MANAGED_BY_INTERNAL");
-            // Installer-mechanics suites exercise download/swap against local
-            // mocks. Production privacy gate is tested separately without this.
+            // Installer-mechanics suites: only effective when the crate is
+            // built with `--features updater-integration-tests`. Product
+            // builds never compile that escape path.
             std::env::set_var("GORK_TEST_ALLOW_UPDATE", "1");
         }
         path

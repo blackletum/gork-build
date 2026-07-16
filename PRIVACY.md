@@ -14,10 +14,11 @@ and config files **cannot** re-enable them while
 `xai_grok_version::PRIVACY_BUILD == true` (including product telemetry
 env vars such as `GROK_TELEMETRY_*` and vendor update settings).
 
-**Residual (debug/test only):** debug-profile builds of the updater crate
-may honor `GORK_TEST_ALLOW_UPDATE=1` so integration tests can exercise
-local mock installers. **Release product binaries ignore that variable
-entirely** (`cfg(debug_assertions)` gate). Never set it outside tests.
+**Installer integration tests only:** the optional Cargo feature
+`updater-integration-tests` (never enabled by `cargo run` / product builds)
+plus `GORK_TEST_ALLOW_UPDATE=1` can relax the vendor-update gate so local
+mock download suites work. That feature is not part of any product binary;
+ordinary debug and release builds have no runtime escape hatch.
 
 1. **Research / trace uploads** — `resolve_trace_upload()` always returns
    `false`. `get_trace_context` never builds an upload method for GCS session
@@ -36,8 +37,8 @@ entirely** (`cfg(debug_assertions)` gate). Never set it outside tests.
    update and minimum-version enforcement also **fail closed** under the
    privacy build — they refuse vendor install rather than overwrite the binary.
    Update by rebuilding from this repository or community releases.
-   Release builds cannot re-enable vendor install via env (see residual note
-   above for the debug-only test hook).
+   Product binaries (debug or release) cannot re-enable vendor install via
+   env; see the test-only Cargo feature note above.
 6. **Sentry** — no compile-time DSN; only an explicit runtime `SENTRY_DSN`
    can enable crash reporting.
 

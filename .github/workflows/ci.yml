@@ -127,10 +127,12 @@ jobs:
           cargo test -p xai-grok-telemetry --lib default_is_privacy
           # Updater hard-off: bottom chokepoint, leader ensure_latest, manual
           # update, status/background, minimum-version refuse vendor install.
+          # Without --features updater-integration-tests: proves product path
+          # has no env escape hatch (including GORK_TEST_ALLOW_UPDATE=1).
           cargo test -p xai-grok-update --lib privacy -- --nocapture
+          cargo test -p xai-grok-update --lib env_cannot_disable -- --nocapture
           cargo test -p xai-grok-update --lib reinstall_hint -- --nocapture
           cargo test -p xai-grok-update --lib refuses_minimum -- --nocapture
-          cargo test -p xai-grok-update --lib test_escape_hatch -- --nocapture
           # Telemetry / trace resolvers: env/config/remote cannot re-enable.
           # Integration test (not --lib): full shell unit tests fail upstream
           # (missing WorkspaceOps::for_test helpers); this binary drives the

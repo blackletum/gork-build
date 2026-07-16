@@ -44,12 +44,10 @@ fn reinstall_hint(installer: &str) -> String {
     }
 }
 
-/// Env var that **debug-profile integration tests** may set to `"1"` so local
-/// mock installer suites can exercise download/swap mechanics.
-///
-/// **Release product binaries ignore this entirely** (`cfg(debug_assertions)`
-/// only). Even in debug, only the exact value `"1"` relaxes the gate — empty
-/// or other values do not.
+/// Env var used **only** when the crate is built with
+/// `--features updater-integration-tests`. Product builds never compile the
+/// escape path, so `cargo run` / release binaries cannot disable the gate.
+#[cfg(feature = "updater-integration-tests")]
 const TEST_ALLOW_UPDATE_ENV: &str = "GORK_TEST_ALLOW_UPDATE";
 
 /// Gork Build never auto-updates from vendor (x.ai) channels. Enabling that
@@ -59,15 +57,14 @@ const TEST_ALLOW_UPDATE_ENV: &str = "GORK_TEST_ALLOW_UPDATE";
 /// Callers must check it, and [`run_install_script`] enforces it as the
 /// last line of defense.
 ///
-/// Debug-only test hook: when built with `debug_assertions` and
-/// `GORK_TEST_ALLOW_UPDATE=1`, the gate is relaxed for crate integration
-/// tests against local fake servers. **Release builds never honor the env
-/// var** — privacy hard-off cannot be re-enabled at runtime in product
-/// binaries.
+/// **No runtime escape hatch in product builds.** The only way to relax this
+/// for local mock installer tests is to compile with the
+/// `updater-integration-tests` feature *and* set `GORK_TEST_ALLOW_UPDATE=1`.
+/// Ordinary `cargo build` / `cargo run` / release builds do not include that
+/// path at all.
 #[inline]
 pub fn vendor_auto_update_forbidden() -> bool {
-    // Release product paths: always honor privacy. No env re-enable.
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "updater-integration-tests")]
     {
         if std::env::var(TEST_ALLOW_UPDATE_ENV).as_deref() == Ok("1") {
             return false;
@@ -2240,8 +2237,8 @@ pub async fn run_update(
     update_config: &mut UpdateConfig,
 ) -> Result<Option<String>> {
     // Manual `gork update` must not pull vendor binaries either.
+    // Message is on the error only (avoid double-print via eprintln + Err).
     if vendor_auto_update_forbidden() {
-        eprintln!("{}", vendor_update_blocked_message());
         return Err(vendor_update_blocked_err());
     }
     apply_channel_switch(channel_switch, update_config).await;
@@ -3343,25 +3340,9 @@ mod tests {
 
     // ──────────────────────────────────────────────────────────────────────
     // Privacy / vendor-update hard-off (Gork Build)
+    // Default product builds (no `updater-integration-tests` feature) never
+    // honor GORK_TEST_ALLOW_UPDATE — even if the env var is present.
     // ──────────────────────────────────────────────────────────────────────
-
-    fn privacy_gate_guard() -> (Option<std::ffi::OsString>,) {
-        let allow = std::env::var_os(TEST_ALLOW_UPDATE_ENV);
-        // SAFETY: unit tests that touch this env are #[serial].
-        unsafe {
-            std::env::remove_var(TEST_ALLOW_UPDATE_ENV);
-        }
-        (allow,)
-    }
-
-    fn privacy_gate_restore(allow: Option<std::ffi::OsString>) {
-        unsafe {
-            match allow {
-                Some(v) => std::env::set_var(TEST_ALLOW_UPDATE_ENV, v),
-                None => std::env::remove_var(TEST_ALLOW_UPDATE_ENV),
-            }
-        }
-    }
 
     fn dummy_update_config() -> UpdateConfig {
         UpdateConfig {
@@ -3375,9 +3356,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn privacy_build_forbids_vendor_auto_update() {
-        let (allow,) = privacy_gate_guard();
         assert!(
             vendor_auto_update_forbidden(),
             "PRIVACY_BUILD must forbid vendor auto-update"
@@ -3391,53 +3370,29 @@ mod tests {
             !msg.contains("curl -fsSL https://x.ai/cli"),
             "must not recommend vendor installers: {msg}"
         );
-        privacy_gate_restore(allow);
     }
 
+    /// Product builds (this default unit-test profile) must not compile in an
+    /// env-based escape hatch. Setting GORK_TEST_ALLOW_UPDATE=1 is a no-op
+    /// unless the crate is built with `--features updater-integration-tests`.
     #[test]
     #[serial_test::serial]
-    fn test_escape_hatch_requires_exact_one_and_debug_assertions() {
-        let (allow,) = privacy_gate_guard();
-        // Empty / arbitrary values must NOT open the gate.
+    fn env_cannot_disable_privacy_gate_without_feature() {
         // SAFETY: serial
         unsafe {
-            std::env::set_var(TEST_ALLOW_UPDATE_ENV, "");
+            std::env::set_var("GORK_TEST_ALLOW_UPDATE", "1");
         }
         assert!(
             vendor_auto_update_forbidden(),
-            "empty env must not disable privacy gate"
+            "without feature updater-integration-tests, env must not open the gate"
         );
         unsafe {
-            std::env::set_var(TEST_ALLOW_UPDATE_ENV, "yes");
+            std::env::remove_var("GORK_TEST_ALLOW_UPDATE");
         }
-        assert!(
-            vendor_auto_update_forbidden(),
-            "non-1 env must not disable privacy gate"
-        );
-        unsafe {
-            std::env::set_var(TEST_ALLOW_UPDATE_ENV, "1");
-        }
-        // cargo test is a debug_assertions build: exact "1" relaxes the gate
-        // so integration suites can exercise install mechanics.
-        #[cfg(debug_assertions)]
-        assert!(
-            !vendor_auto_update_forbidden(),
-            "debug + GORK_TEST_ALLOW_UPDATE=1 should relax gate for installer tests"
-        );
-        // Document release semantics: without debug_assertions the env is ignored.
-        // (This branch is not taken under `cargo test`, but keeps the contract explicit.)
-        #[cfg(not(debug_assertions))]
-        assert!(
-            vendor_auto_update_forbidden(),
-            "release builds must ignore GORK_TEST_ALLOW_UPDATE"
-        );
-        privacy_gate_restore(allow);
     }
 
     #[tokio::test]
-    #[serial_test::serial]
     async fn run_install_script_fail_closed_under_privacy() {
-        let (allow,) = privacy_gate_guard();
         assert!(vendor_auto_update_forbidden());
 
         let cfg = dummy_update_config();
@@ -3455,13 +3410,10 @@ mod tests {
                 "installer={installer}: must not recommend vendor curl: {s}"
             );
         }
-        privacy_gate_restore(allow);
     }
 
     #[tokio::test]
-    #[serial_test::serial]
     async fn ensure_latest_on_disk_no_install_under_privacy() {
-        let (allow,) = privacy_gate_guard();
         assert!(vendor_auto_update_forbidden());
 
         let cfg = dummy_update_config();
@@ -3477,13 +3429,10 @@ mod tests {
             !outcome.relaunch_needed,
             "must not claim relaunch after a privacy no-op"
         );
-        privacy_gate_restore(allow);
     }
 
     #[tokio::test]
-    #[serial_test::serial]
     async fn auto_update_target_none_under_privacy() {
-        let (allow,) = privacy_gate_guard();
         assert!(vendor_auto_update_forbidden());
         let cfg = dummy_update_config();
         assert_eq!(
@@ -3491,13 +3440,10 @@ mod tests {
             None,
             "auto_update_target must not return a vendor install plan"
         );
-        privacy_gate_restore(allow);
     }
 
     #[tokio::test]
-    #[serial_test::serial]
     async fn check_update_status_does_not_advertise_vendor_update_under_privacy() {
-        let (allow,) = privacy_gate_guard();
         assert!(vendor_auto_update_forbidden());
         let cfg = dummy_update_config();
         let status = check_update_status(&cfg).await;
@@ -3512,13 +3458,10 @@ mod tests {
             err.contains("never installs from vendor") || err.contains("x.ai"),
             "unexpected status error: {err}"
         );
-        privacy_gate_restore(allow);
     }
 
     #[tokio::test]
-    #[serial_test::serial]
     async fn run_update_fail_closed_under_privacy() {
-        let (allow,) = privacy_gate_guard();
         assert!(vendor_auto_update_forbidden());
         let mut cfg = dummy_update_config();
         let err = run_update(false, None, None, &mut cfg)
@@ -3529,26 +3472,20 @@ mod tests {
             s.contains("never installs from vendor") || s.contains("x.ai"),
             "unexpected error: {s}"
         );
-        privacy_gate_restore(allow);
     }
 
     #[tokio::test]
-    #[serial_test::serial]
     async fn run_update_if_available_is_noop_under_privacy() {
-        let (allow,) = privacy_gate_guard();
         assert!(vendor_auto_update_forbidden());
         let cfg = dummy_update_config();
         let ran = run_update_if_available(UpdateRunMode::Blocking, false, &cfg)
             .await
             .expect("must return Ok(false), not panic");
         assert!(!ran, "must not run a blocking vendor update");
-        privacy_gate_restore(allow);
     }
 
     #[tokio::test]
-    #[serial_test::serial]
     async fn check_update_background_is_noop_under_privacy() {
-        let (allow,) = privacy_gate_guard();
         assert!(vendor_auto_update_forbidden());
         let cfg = dummy_update_config();
         let bg = check_update_background(&cfg).await;
@@ -3560,7 +3497,6 @@ mod tests {
             bg.download.is_none(),
             "background check must not spawn a download child"
         );
-        privacy_gate_restore(allow);
     }
 
     // ──────────────────────────────────────────────────────────────────────

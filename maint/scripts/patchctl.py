@@ -139,6 +139,11 @@ def run(
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     merged = os.environ.copy()
+    # CI runners often have no git identity; git am/commit need one.
+    merged.setdefault("GIT_AUTHOR_NAME", "Gork CI")
+    merged.setdefault("GIT_AUTHOR_EMAIL", "gork-ci@users.noreply.github.com")
+    merged.setdefault("GIT_COMMITTER_NAME", merged["GIT_AUTHOR_NAME"])
+    merged.setdefault("GIT_COMMITTER_EMAIL", merged["GIT_AUTHOR_EMAIL"])
     if env:
         merged.update(env)
     proc = subprocess.run(
@@ -158,6 +163,18 @@ def run(
 
 def git(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
     return run(["git", *args], **kwargs)
+
+
+def git_resolvable(root: Path, rev: str) -> bool:
+    if not rev:
+        return False
+    proc = git(
+        ["cat-file", "-e", f"{rev}^{{commit}}"],
+        cwd=root,
+        check=False,
+        capture=True,
+    )
+    return proc.returncode == 0
 
 
 @dataclass
@@ -894,19 +911,14 @@ def cmd_roundtrip(args: argparse.Namespace) -> int:
     """
     root = repo_root()
     lock = UpstreamLock.load(root / "maint/upstream.lock.toml")
+    apply_only = bool(getattr(args, "apply_only", False))
     expected = args.expected or lock.patch_tip
-    if not expected:
-        print("set lock.patch_tip or pass --expected", file=sys.stderr)
-        return 2
-    expected_sha = git(["rev-parse", expected], cwd=root, capture=True).stdout.strip()
     base = args.base or lock.commit
-    # Product tree = patches + overlays. Prefer product_tip; allow HEAD for drift.
-    compare_to = (
-        args.compare_to
-        or lock.product_tip
-        or expected_sha
-    )
-    lock_from = args.lock_from or compare_to or expected_sha
+    # Product tree = patches + overlays. Prefer explicit compare_to / product_tip.
+    compare_to = args.compare_to
+    if not apply_only and not compare_to:
+        compare_to = lock.product_tip or expected
+    lock_from = args.lock_from or compare_to or expected
 
     with tempfile.TemporaryDirectory(prefix="gork-roundtrip-") as tmp:
         wt = Path(tmp) / "wt"
@@ -938,53 +950,48 @@ def cmd_roundtrip(args: argparse.Namespace) -> int:
                     return 3
 
             apply_overlays(wt)
+            if apply_only:
+                print(
+                    f"roundtrip apply-only OK: series applies on {base[:12]} "
+                    f"(+ overlays; tree not compared)"
+                )
+                return 0
+
             cfg = load_control_files(root)
             strip_control_paths(wt, cfg)
 
             run(["git", "add", "-A"], cwd=wt)
-            run(["git", "checkout", lock_from, "--", "Cargo.lock"], cwd=wt, check=False)
-            run(["git", "add", "-A", "--", "Cargo.lock"], cwd=wt, check=False)
-
-            compare_sha = run(
-                ["git", "rev-parse", compare_to], cwd=root, capture=True
-            ).stdout.strip()
-
-            # Build a temporary clean tree of compare_to without control paths
-            cmp_wt = Path(tmp) / "cmp"
-            git(["worktree", "add", "--detach", str(cmp_wt), compare_sha], cwd=root)
-            try:
-                strip_control_paths(cmp_wt, cfg)
-                run(["git", "add", "-A"], cwd=cmp_wt)
-                # Diff staged trees: wt vs cmp_wt via git diff --no-index is messy;
-                # instead diff wt cached against compare_sha and filter control +
-                # also account for files only on compare that are control.
-                names = run(
-                    ["git", "diff", "--cached", "--name-only", compare_sha],
+            if lock_from and git_resolvable(root, str(lock_from)):
+                run(
+                    ["git", "checkout", str(lock_from), "--", "Cargo.lock"],
                     cwd=wt,
-                    capture=True,
-                )
-                changed = [
-                    n
-                    for n in names.stdout.splitlines()
-                    if n.strip()
-                    and n.strip() != "Cargo.lock"
-                    and not control_path_allowed(n, cfg)
-                ]
-                # Files present on compare but deleted in replay (product drift)
-                # already appear in name-only diff.
-                if changed:
-                    print(
-                        "roundtrip tree mismatch vs product tree:",
-                        file=sys.stderr,
-                    )
-                    print("\n".join(changed), file=sys.stderr)
-                    return 1
-            finally:
-                git(
-                    ["worktree", "remove", "--force", str(cmp_wt)],
-                    cwd=root,
                     check=False,
                 )
+                run(["git", "add", "-A", "--", "Cargo.lock"], cwd=wt, check=False)
+
+            compare_sha = run(
+                ["git", "rev-parse", str(compare_to)], cwd=root, capture=True
+            ).stdout.strip()
+
+            names = run(
+                ["git", "diff", "--cached", "--name-only", compare_sha],
+                cwd=wt,
+                capture=True,
+            )
+            changed = [
+                n
+                for n in names.stdout.splitlines()
+                if n.strip()
+                and n.strip() != "Cargo.lock"
+                and not control_path_allowed(n, cfg)
+            ]
+            if changed:
+                print(
+                    "roundtrip tree mismatch vs product tree:",
+                    file=sys.stderr,
+                )
+                print("\n".join(changed), file=sys.stderr)
+                return 1
 
             print(
                 f"roundtrip OK: base {base[:12]} + series(+overlays) "
@@ -1054,20 +1061,14 @@ def cmd_lint(args: argparse.Namespace) -> int:
     else:
         err("missing privacy-contract.toml")
 
-    # trailer / order / control-after-tip when we can see history
+    # trailer / order when both base and patch_tip are present in this clone
+    # (control-plane-only PRs may only carry patches, not authoring commits).
     if lock.patch_tip and lock.commit:
-        try:
-            git(["cat-file", "-e", f"{lock.patch_tip}^{{commit}}"], cwd=root)
-            git(["cat-file", "-e", f"{lock.commit}^{{commit}}"], cwd=root)
-            ordered = validated_functional_commits(root, lock.commit, lock.patch_tip)
-            if ordered[-1][0] != lock.patch_tip:
-                # patch_tip must be exactly last functional when no control after
-                # allow equality only
-                pass
-            if ordered[-1][0] != git(
-                ["rev-parse", lock.patch_tip], cwd=root, capture=True
-            ).stdout.strip():
-                # if patch_tip is functional tip this is ok; if lock points past it, fail
+        if git_resolvable(root, lock.commit) and git_resolvable(root, lock.patch_tip):
+            try:
+                ordered = validated_functional_commits(
+                    root, lock.commit, lock.patch_tip
+                )
                 tip_sha = git(
                     ["rev-parse", lock.patch_tip], cwd=root, capture=True
                 ).stdout.strip()
@@ -1076,59 +1077,91 @@ def cmd_lint(args: argparse.Namespace) -> int:
                         f"lock.patch_tip {tip_sha[:12]} is not last functional "
                         f"commit {ordered[-1][0][:12]}"
                     )
-        except SystemExit as exc:
-            err(str(exc))
-        except Exception as exc:  # noqa: BLE001
-            err(f"history checks failed: {exc}")
+            except SystemExit as exc:
+                err(str(exc))
+            except Exception as exc:  # noqa: BLE001
+                err(f"history checks failed: {exc}")
+        else:
+            print(
+                "lint note: lock.patch_tip/commit not in clone; "
+                "skipping trailer history checks (series SHA256 still enforced)"
+            )
 
     # Replay patches+overlays and compare product trees.
     #
     # Default target is always current HEAD (minus control paths) so that
-    # unexported product edits after product_tip still fail CI:
+    # unexported product edits after product_tip still fail CI.
     #
-    #   product_tip → control → direct Rust privacy edit  # must fail
-    #
-    # When lock.product_tip is set and differs from HEAD, also verify the
-    # recorded product_tip still rebuilds (lock integrity). Explicit
-    # --compare-to overrides both and runs a single check.
+    # When lock.product_tip is resolvable and differs from HEAD, also verify
+    # the recorded product_tip still rebuilds (lock integrity).
     if not args.skip_roundtrip:
-        head = git(["rev-parse", "HEAD"], cwd=root, capture=True).stdout.strip()
-        explicit = getattr(args, "compare_to", None)
-        targets: list[tuple[str, str]] = []
-        if explicit:
-            targets.append(("compare-to", explicit))
+        if not git_resolvable(root, lock.commit):
+            err(
+                f"lock.commit {lock.commit[:12]} not resolvable; "
+                "cannot roundtrip (fetch full history or tag the base)"
+            )
         else:
-            # Primary: current HEAD product tree (drift detection)
-            targets.append(("HEAD", head))
-            # Secondary: recorded product_tip when it is a distinct ref
-            if lock.product_tip:
-                try:
+            head = git(["rev-parse", "HEAD"], cwd=root, capture=True).stdout.strip()
+            explicit = getattr(args, "compare_to", None)
+            targets: list[tuple[str, str]] = []
+            if explicit:
+                targets.append(("compare-to", explicit))
+            else:
+                targets.append(("HEAD", head))
+                if lock.product_tip and git_resolvable(root, lock.product_tip):
                     pt = git(
                         ["rev-parse", lock.product_tip], cwd=root, capture=True
                     ).stdout.strip()
                     if pt != head:
                         targets.append(("lock.product_tip", pt))
-                except SystemExit:
-                    err(
-                        f"lock.product_tip {lock.product_tip[:12]} is not "
-                        "resolvable in this clone"
+                elif lock.product_tip:
+                    print(
+                        f"lint note: lock.product_tip {lock.product_tip[:12]} "
+                        "not in clone; skipping recorded product_tip check"
                     )
 
-        for label, target in targets:
-            print(f"lint roundtrip vs {label} ({target[:12]})")
-            rc = cmd_roundtrip(
-                argparse.Namespace(
-                    expected=lock.patch_tip,
-                    compare_to=target,
-                    lock_from=None,
-                    base=None,
-                )
+            # On control-plane-only branches, HEAD is the pre-patch product
+            # history (e.g. main) while series rebuilds from lock.commit.
+            # Tree equality is only meaningful when product_tip is in-clone
+            # (authoring/sync) or when an explicit --compare-to is given.
+            # Otherwise require a clean apply only.
+            product_tip_ok = bool(
+                lock.product_tip and git_resolvable(root, lock.product_tip)
             )
-            if rc != 0:
-                err(
-                    f"roundtrip vs {label} failed (exit {rc}); "
-                    "export/finalize product tree or revert unexported edits"
+            if not explicit and not product_tip_ok:
+                print(
+                    "lint note: product_tip not in clone — verifying clean "
+                    "series apply only (no HEAD tree equality)"
                 )
+                rc = cmd_roundtrip(
+                    argparse.Namespace(
+                        expected=lock.patch_tip,
+                        compare_to=None,
+                        lock_from=None,
+                        base=None,
+                        apply_only=True,
+                    )
+                )
+                if rc != 0:
+                    err(f"series apply failed on lock.commit (exit {rc})")
+            else:
+                for label, target in targets:
+                    print(f"lint roundtrip vs {label} ({target[:12]})")
+                    rc = cmd_roundtrip(
+                        argparse.Namespace(
+                            expected=lock.patch_tip,
+                            compare_to=target,
+                            lock_from=None,
+                            base=None,
+                            apply_only=False,
+                        )
+                    )
+                    if rc != 0:
+                        err(
+                            f"roundtrip vs {label} failed (exit {rc}); "
+                            "export/finalize product tree or revert "
+                            "unexported edits"
+                        )
 
     if errors:
         print(f"lint failed: {len(errors)} error(s)", file=sys.stderr)

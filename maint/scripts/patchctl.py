@@ -795,7 +795,14 @@ def cmd_apply(args: argparse.Namespace) -> int:
             # non-fatal for lock policy metadata-only if cargo missing? keep hard fail
             return 1
 
-        # Stage control plane + overlays
+        # Stage control plane + overlays.
+        # Remove CI-only artifacts written to the worktree (e.g. upstream-sensitive.json
+        # from upstream-replay.yml) so they never enter the product tree — otherwise
+        # finalize-sync roundtrip reports a spurious tree mismatch.
+        for artifact in ("upstream-sensitive.json",):
+            p = root / artifact
+            if p.exists():
+                p.unlink()
         git(["add", "-A"], cwd=root)
         status = git(["status", "--porcelain"], cwd=root, capture=True)
         if status.stdout.strip():
